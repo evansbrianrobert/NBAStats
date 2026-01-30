@@ -79,7 +79,7 @@ def get_dates_of_games(out_path: str | Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     months = [
-        "october", #"november", "december", "january", "february", "march", "april", "may", "june"
+        "october", "november", "december", "january", "february", "march", "april", "may", "june"
     ]
 
     rows = []
