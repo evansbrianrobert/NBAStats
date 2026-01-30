@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -73,13 +74,14 @@ def get_team_name_abbrevs(out_path: str | Path) -> pd.DataFrame:
 def get_dates_of_games(out_path: str | Path,
                        start_year: int = 1992,
                        end_year: int = 2022 ,
+                       request_delay_s: float = 6,
                        ) -> pd.DataFrame:
     """Scrape Basketball Reference schedule pages to get game ids per month."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     months = [
-        "october", "november", "december", "january", "february", "march", "april", "may", "june"
+        "october", #"november", "december", "january", "february", "march", "april", "may", "june"
     ]
 
     rows = []
@@ -87,6 +89,7 @@ def get_dates_of_games(out_path: str | Path,
         for month in months:
             url = f"https://www.basketball-reference.com/leagues/NBA_{year}_games-{month}.html"
             text, links = get_soup(url)
+            #time.sleep(request_delay_s)
             if text == "404":
                 continue
 

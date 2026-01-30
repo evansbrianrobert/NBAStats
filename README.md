@@ -61,8 +61,10 @@ export PYTHONPATH=$PWD/src
 ### 1) Scrape boxscores
 Writes year-level pickles to `data/boxscores/`.
 
+Unfortunatly bots have caused sites to no longer allow scraping at rates > 1 request per 5 seconds. Skip to step 2. Necessary data for running rest of steps is located in repository.
+
 ```bash
-./scripts/nbastats scrape --data-dir data --start-year 2018 --end-year 2019 --delay 0.75
+./scripts/nbastats scrape --data-dir data --start-year 2018 --end-year 2019 
 ```
 
 Outputs:
@@ -70,6 +72,7 @@ Outputs:
 - `data/boxscores/2018.pkl`, `data/boxscores/2019.pkl`, ...
 
 ### 2) Combine year pickles
+
 ```bash
 ./scripts/nbastats combine-boxscores --boxscores-dir data/boxscores --out data/AllYears.pkl
 ```
@@ -82,8 +85,10 @@ This stage expects a `playerData.pkl` (player metadata). In the original version
 player metadata was scraped separately. For review purposes, the important part is the workflow
 and dataset joins.
 
+These files are large. Skip this step if just running examples. Years 2018 and 2019 already saved to repo.
+
 ```bash
-./scripts/nbastats build-master --all-years data/AllYears.pkl --player-data data/playerData.pkl --out-dir data/master_by_year
+./scripts/nbastats build-master --all-years data/AllYears.pkl --player-data data/playerData.pkl --out-dir data/master_by_year --workers 4
 ```
 
 Outputs:
@@ -109,7 +114,7 @@ Output:
 - `data/trainingData.pkl`
 
 ### 6) Train a baseline model
-Predicts whether the home team wins (`score_diff > 0`) using a logistic regression baseline.
+Predicts whether the home team wins (`score_diff > 0`) using a logistic regression baseline. This does not predict if team beat spread.
 
 ```bash
 ./scripts/nbastats train-baseline --training data/trainingData.pkl --out-dir outputs --test-frac 0.2 --seed 0
@@ -149,4 +154,5 @@ This repo demonstrates:
 - repeatable dataset construction with intermediate artifacts
 - basic performance hygiene (vectorized pandas operations, avoid manual busywork)
 - professional ergonomics (argparse entrypoints + structured logging)
+
 

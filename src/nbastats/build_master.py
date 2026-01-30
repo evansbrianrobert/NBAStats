@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List
 
@@ -43,46 +44,60 @@ def _build_row(game_idx: int, player: pd.Series, game_player_list: List[pd.DataF
     return pd.concat([tmp, player], axis=0)
 
 
-def _player_data(player: pd.Series, game: pd.Series, home: bool, all_player_data: pd.DataFrame) -> pd.Series:
+def _player_data(
+    player: pd.Series,
+    game: pd.Series,
+    home: bool,
+    by_team_name: pd.DataFrame,
+    by_name: pd.DataFrame,
+) -> pd.Series:
     if home:
         team = game.Home
-        advanced = game.Home_Advanced[game.Home_Advanced.Starters == player.Starters].iloc[:, 2:].iloc[0]
+        adv_df = game.Home_Advanced
     else:
         team = game.Away
-        advanced = game.Away_Advanced[game.Away_Advanced.Starters == player.Starters].iloc[:, 2:].iloc[0]
+        adv_df = game.Away_Advanced
 
     name = player.Starters
-    # Fix known encoding issue observed in historical data.
     if name == "Peja StojakoviÄ":
         name = "Peja Stojaković"
 
-    info = all_player_data[(all_player_data.Year == game.Season) & (all_player_data.Team == team) & (all_player_data.Name == name)]
-    if info.empty:
-        info = all_player_data[(all_player_data.Year == game.Season) & (all_player_data.Name == name)]
+    # Advanced row lookup
+    advanced = adv_df[adv_df.Starters == player.Starters].iloc[:, 2:].iloc[0]
 
-    if info.empty:
-        raise KeyError(f"Could not match player info for name={name} year={game.Season} team={team}")
+    # Player metadata lookup (FAST)
+    try:
+        info = by_team_name.loc[(team, name)]
+        info_row = info.iloc[0] if isinstance(info, pd.DataFrame) else info
+    except KeyError:
+        try:
+            info = by_name.loc[name]
+            info_row = info.iloc[0] if isinstance(info, pd.DataFrame) else info
+        except KeyError:
+            raise KeyError(f"Could not match player info for name={name} year={game.Season} team={team}")
 
-    info_row = info.iloc[0]
     basic = player.iloc[1:]
     return pd.concat([info_row, basic, advanced], axis=0)
 
-
-def _home_player_data(row: pd.Series, all_player_data: pd.DataFrame) -> pd.DataFrame:
+def _home_player_data(row: pd.Series, by_team_name: pd.DataFrame, by_name: pd.DataFrame) -> pd.DataFrame:
     box_score = row.Home_Basic.dropna(subset=["FG"])
-    return box_score.apply(lambda x: _player_data(x, row, home=True, all_player_data=all_player_data), axis=1)
+    return box_score.apply(lambda x: _player_data(x, row, True, by_team_name, by_name), axis=1)
 
-
-def _away_player_data(row: pd.Series, all_player_data: pd.DataFrame) -> pd.DataFrame:
+def _away_player_data(row: pd.Series, by_team_name: pd.DataFrame, by_name: pd.DataFrame) -> pd.DataFrame:
     box_score = row.Away_Basic.dropna(subset=["FG"])
-    return box_score.apply(lambda x: _player_data(x, row, home=False, all_player_data=all_player_data), axis=1)
+    return box_score.apply(lambda x: _player_data(x, row, False, by_team_name, by_name), axis=1)
 
+def _players_in_game(row: pd.Series, by_team_name: pd.DataFrame, by_name: pd.DataFrame) -> List[pd.DataFrame]:
+    return [
+        _home_player_data(row, by_team_name, by_name),
+        _away_player_data(row, by_team_name, by_name),
+    ]
 
-def _players_in_game(row: pd.Series, all_player_data: pd.DataFrame) -> List[pd.DataFrame]:
-    home = _home_player_data(row, all_player_data)
-    away = _away_player_data(row, all_player_data)
-    return [home, away]
-
+def _build_player_lookup(all_player_data_year: pd.DataFrame):
+    # Fast lookup by (Team, Name), fallback by Name only
+    by_team_name = all_player_data_year.set_index(["Team", "Name"], drop=False)
+    by_name = all_player_data_year.set_index(["Name"], drop=False)
+    return by_team_name, by_name
 
 def build_master_by_year(
     all_years_pkl: str | Path,
@@ -104,28 +119,62 @@ def build_master_by_year(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    logger.info("Loading boxscores: %s", all_years_pkl)
     df = pd.read_pickle(all_years_pkl)
+
+    logger.info("Loading player metadata: %s", player_data_pkl)
     all_player_data = pd.read_pickle(player_data_pkl)
 
-    for year in sorted(df.Season.unique()):
-        out_path = out_dir / f"{int(year)}_master.pkl"
+    years = sorted(df.Season.unique())
+    logger.info("Found %d seasons: %s", len(years), [int(y) for y in years])
+
+    for year in years:
+        year_int = int(year)
+        out_path = out_dir / f"{year_int}_master.pkl"
+
         if out_path.exists() and not overwrite:
             logger.info("Skipping existing: %s", out_path)
             continue
 
-        logger.info("Building master for %s", int(year))
+        logger.info("Building master for %d", year_int)
+
+        # Slice year boxscores
         year_df = df[df.Season == year]
 
-        all_players_in_game = year_df.apply(lambda r: _players_in_game(r, all_player_data), axis=1)
+        # Slice player metadata to the same year (shrinks lookup table a lot)
+        # Your playerData Year column is float (e.g., 1992.0), so compare on float.
+        apd_year = all_player_data[all_player_data.Year == float(year)]
+        if apd_year.empty:
+            logger.warning("No player metadata found for year=%s (float=%s)", year, float(year))
+
+        by_team_name, by_name = _build_player_lookup(apd_year)
+
+        # Build players-in-game (home/away) for each row in the year df.
+        # NOTE: This assumes _players_in_game(row, by_team_name, by_name) exists.
+        all_players_in_game = year_df.apply(
+            lambda r: _players_in_game(r, by_team_name, by_name),
+            axis=1,
+        )
 
         master_rows = []
+        n_games = len(all_players_in_game)
+
         for game_idx, game_player_list in enumerate(all_players_in_game):
             home_df, away_df = game_player_list[0], game_player_list[1]
-            master_rows.append(home_df.apply(lambda x: _build_row(game_idx, x, game_player_list, True), axis=1))
-            master_rows.append(away_df.apply(lambda x: _build_row(game_idx, x, game_player_list, False), axis=1))
+
+            # Small speed tweak: compute these once per game, not per player row.
+            # (Requires _build_row to accept precomputed lists OR you keep your current _build_row.)
+            # If you keep your current _build_row signature, ignore this comment.
+
+            master_rows.append(
+                home_df.apply(lambda x: _build_row(game_idx, x, game_player_list, True), axis=1)
+            )
+            master_rows.append(
+                away_df.apply(lambda x: _build_row(game_idx, x, game_player_list, False), axis=1)
+            )
 
             if game_idx % 100 == 0:
-                logger.info("...game %d / %d", game_idx, len(all_players_in_game))
+                logger.info("...game %d / %d", game_idx, n_games)
 
         master = pd.concat(master_rows, ignore_index=True)
         master.to_pickle(out_path)

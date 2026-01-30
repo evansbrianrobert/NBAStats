@@ -81,7 +81,7 @@ def scrape_boxscores(
     data_dir: str | Path = "data",
     start_year: int = 1992,
     end_year: int = 2022,
-    request_delay_s: float = 0.5,
+    request_delay_s: float = 6,
     overwrite: bool = False,
 ) -> None:
     """Scrape Basketball Reference boxscores into year-level pickles.
@@ -102,7 +102,7 @@ def scrape_boxscores(
         logger.info("Loaded games index: %s", games_path)
     else:
         logger.info("No games index found; scraping schedules to build it.")
-        games_by_year = get_dates_of_games(games_path,start_year,end_year)
+        games_by_year = get_dates_of_games(games_path,start_year,end_year,request_delay_s)
 
     html_prefix = "https://www.basketball-reference.com/boxscores/"
 
