@@ -3,3 +3,7 @@
 *.py~
 *.md~
 .gitignore~
+data/*.pkl
+data/**.pkl
+data/master_by_year/*.pkl
+outputs/
